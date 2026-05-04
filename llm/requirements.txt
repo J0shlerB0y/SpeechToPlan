@@ -1,0 +1,8 @@
+transformers==4.46.0
+torch==2.4.1
+accelerate==1.0.1
+peft==0.13.2
+bitsandbytes==0.44.1
+datasets==3.0.2
+sentencepiece==0.2.0
+pydantic==2.9.2
