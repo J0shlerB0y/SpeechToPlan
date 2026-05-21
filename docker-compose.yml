@@ -1,38 +1,28 @@
+# Docker-compose только для Telegram-бота.
+# ML-сервис (asr_emotion + llm) запускается на ХОСТЕ напрямую с GPU
+# (см. docs/SETUP.md). Бот ходит к нему через host.docker.internal:8000.
 services:
-  speechtoplan:
+  bot:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: speechtoplan:latest
-    container_name: speechtoplan
+    image: speechtoplan-bot:latest
+    container_name: speechtoplan-bot
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
-      DEVICE: cuda
-      ASR_MODEL_SIZE: tiny
-      ASR_COMPUTE_TYPE: int8
-      LLM_MODEL_PATH: google/functiongemma-270m-it
-      LLM_QUANT: int4
-      EMOTION_MODEL: superb/wav2vec2-base-superb-er
+      ML_SERVICE_URL: ${ML_SERVICE_URL:-http://host.docker.internal:8000}
+      ML_REQUEST_TIMEOUT: ${ML_REQUEST_TIMEOUT:-120}
+      MAX_AUDIO_SECONDS: ${MAX_AUDIO_SECONDS:-120}
       BOT_TMP_DIR: /tmp/voice
-      # Если есть LoRA-адаптер для LLM — раскомментировать:
-      # LLM_ADAPTER_PATH: /models/adapters/best_adapter
+    extra_hosts:
+      # Linux-хосты не знают host.docker.internal по умолчанию.
+      # Docker Desktop (Win/Mac) добавляет автоматически — здесь дублируем для Linux.
+      - "host.docker.internal:host-gateway"
     volumes:
-      - hf_cache:/models/hf
-      - ./checkpoints:/models/adapters:ro
       - voice_tmp:/tmp/voice
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    # Альтернативный синтаксис, если runtime nvidia настроен явно:
-    # runtime: nvidia
-    # gpus: all
 
 volumes:
-  hf_cache:
   voice_tmp:

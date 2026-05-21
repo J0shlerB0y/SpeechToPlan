@@ -1,0 +1,21 @@
+# Ставится в системный Python 3.13 на хосте.
+# torch / torchaudio НЕ перечислены — установи их вручную нужной сборкой:
+#   pip install --index-url https://download.pytorch.org/whl/cu124 torch torchaudio
+
+faster-whisper>=1.0.3
+transformers==4.46.0
+accelerate>=1.0.0
+peft==0.13.2
+sentencepiece>=0.2.0
+soundfile>=0.12.1
+numpy>=1.26
+av>=12  # для декодирования аудио без ffmpeg в PATH
+
+# REST-обёртка
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.9
+
+# bitsandbytes не ставим как обязательную — на Windows капризна;
+# нужна только если ML_LLM_QUANT=int4|int8. Команда установки в SETUP.md.

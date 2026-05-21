@@ -3,59 +3,39 @@
 Локальный Telegram-ассистент-планировщик: голос/текст → структурированная JSON-задача.
 
 ```
-┌──────────┐   text    ┌────────────────┐               ┌────────────┐
-│ Telegram │──────────►│ /bot (aiogram) │──────────────►│   /llm     │
-│  voice   │   .ogg    │  оркестрация   │   text+emo    │ FunctionGemma│
-└──────────┘           └──────┬─────────┘               └─────┬──────┘
-                              │ audio path                    │ JSON
-                              ▼                               ▼
-                     ┌────────────────────┐         ┌──────────────────┐
-                     │   /asr_emotion     │         │   PlannerTask    │
-                     │ Whisper ║ wav2vec2 │         │ (Pydantic)       │
-                     └────────────────────┘         └──────────────────┘
+ ┌──────────────────────────┐  HTTP   ┌──────────────────────────────────┐
+ │ Telegram-бот (Docker)    │ ─────►  │ ML-сервис (хост, GPU)            │
+ │ aiogram 3.x + httpx      │ ◄─────  │ FastAPI + faster-whisper +       │
+ │                          │ JSON    │ wav2vec2 SER + FunctionGemma     │
+ └──────────────────────────┘         └──────────────────────────────────┘
+                       host.docker.internal:8000
 ```
+
+ML-стек запускается на хосте (прямой доступ к GPU без `nvidia-container-toolkit`),
+бот — в лёгком Docker-образе. Между ними FastAPI.
 
 ## Структура
-- `bot/` — aiogram-бот, точка входа `python -m bot.main`
+- `bot/` — aiogram-бот, обращается к ML по HTTP
+- `ml_service/` — FastAPI-сервис: оборачивает asr_emotion + llm
 - `asr_emotion/` — параллельный ASR (faster-whisper) + SER (wav2vec2)
-- `llm/` — FunctionGemma-270m-it: инференс и QLoRA-обучение с Grid Search
-- `shared/` — Pydantic-схемы, общие для всех модулей
-- `docker/`, `docker-compose.yml` — деплой
+- `llm/` — FunctionGemma-270m-it: инференс и QLoRA Grid Search
+- `shared/` — Pydantic-контракты (`EnrichedUtterance`, `PlannerTask`)
+- `scripts/test_pipeline.py` — smoke-тест pipeline без HTTP/бота
+- `docker/`, `docker-compose.yml` — деплой бота
+- **`docs/SETUP.md`** — пошаговая инструкция запуска ⬅ начни отсюда
 - `docs/DEFENSE.md` — материалы для защиты
-- `docs/DEPLOY_WINDOWS.md` — деплой на Windows + RTX 3050 Ti
 
-## Быстрый старт (Docker)
+## Quick start
 ```powershell
+# 1) ML-сервис на хосте (GPU)
+& "E:\dev\Python\313\Scripts\pip.exe" install -r ml_service\requirements.txt
+$env:ML_DEVICE="cuda"; $env:ML_LLM_QUANT="int4"
+& "E:\dev\Python\313\python.exe" -m uvicorn ml_service.server:app --host 0.0.0.0 --port 8000
+
+# 2) Бот в Docker (в другом терминале)
 Copy-Item .env.example .env       # вписать TELEGRAM_BOT_TOKEN
-docker compose up --build -d
-docker compose logs -f speechtoplan
+docker compose up --build -d bot
+docker compose logs -f bot
 ```
 
-## Быстрый старт (без Docker)
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-$env:TELEGRAM_BOT_TOKEN = "..."
-python -m bot.main
-```
-
-## Обучение моделей (RTX 3050 Ti, 4 ГБ)
-
-### Whisper-tiny LoRA + WER
-```powershell
-python -m asr_emotion.training.train_whisper_lora `
-    --dataset mozilla-foundation/common_voice_17_0 `
-    --lang ru --output .\checkpoints\whisper-tiny-ru-lora
-```
-
-### FunctionGemma QLoRA + Grid Search
-```powershell
-python -m llm.training.qlora_grid_search `
-    --train-file .\llm\data\tasks_train.jsonl `
-    --val-file .\llm\data\tasks_val.jsonl `
-    --output .\checkpoints\gemma-grid
-```
-Результат: `checkpoints/gemma-grid/grid_summary.json` (таблица результатов)
-и `checkpoints/gemma-grid/best_adapter/` (лучший LoRA-адаптер). Подключается
-переменной окружения `LLM_ADAPTER_PATH`.
+Подробности, обучение, отладка → [docs/SETUP.md](docs/SETUP.md).

@@ -10,12 +10,8 @@ from pathlib import Path
 class BotConfig:
     token: str
     tmp_dir: Path
-    asr_model_size: str = "tiny"          # tiny / base — для 4 ГБ VRAM
-    asr_compute_type: str = "int8"        # int8 / int8_float16
-    emotion_model: str = "superb/wav2vec2-base-superb-er"
-    llm_model_path: str = "google/functiongemma-270m-it"
-    llm_quant: str = "int4"               # int4 / int8
-    device: str = "cuda"                  # cuda / cpu
+    ml_service_url: str
+    ml_request_timeout: float = 120.0
     max_audio_seconds: int = 120
 
 
@@ -28,11 +24,7 @@ def load_config() -> BotConfig:
     return BotConfig(
         token=token,
         tmp_dir=tmp_dir,
-        asr_model_size=os.getenv("ASR_MODEL_SIZE", "tiny"),
-        asr_compute_type=os.getenv("ASR_COMPUTE_TYPE", "int8"),
-        emotion_model=os.getenv("EMOTION_MODEL", "superb/wav2vec2-base-superb-er"),
-        llm_model_path=os.getenv("LLM_MODEL_PATH", "google/functiongemma-270m-it"),
-        llm_quant=os.getenv("LLM_QUANT", "int4"),
-        device=os.getenv("DEVICE", "cuda"),
+        ml_service_url=os.getenv("ML_SERVICE_URL", "http://host.docker.internal:8000"),
+        ml_request_timeout=float(os.getenv("ML_REQUEST_TIMEOUT", "120")),
         max_audio_seconds=int(os.getenv("MAX_AUDIO_SECONDS", "120")),
     )

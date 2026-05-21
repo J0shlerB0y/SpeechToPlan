@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from llm.prompts import build_chat
 from shared.schemas import EnrichedUtterance, PlannerTask
@@ -27,7 +27,13 @@ log = logging.getLogger(__name__)
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def _bnb_config(quant: str) -> BitsAndBytesConfig | None:
+def _bnb_config(quant: str):
+    """Импорт bitsandbytes ленивый: на Windows/CPU он часто не ставится,
+    а для quant='none' он и не нужен."""
+    if quant not in {"int4", "int8"}:
+        return None
+    from transformers import BitsAndBytesConfig  # noqa: WPS433
+
     if quant == "int4":
         return BitsAndBytesConfig(
             load_in_4bit=True,
@@ -35,9 +41,7 @@ def _bnb_config(quant: str) -> BitsAndBytesConfig | None:
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.float16,
         )
-    if quant == "int8":
-        return BitsAndBytesConfig(load_in_8bit=True)
-    return None
+    return BitsAndBytesConfig(load_in_8bit=True)
 
 
 @dataclass
@@ -59,8 +63,9 @@ class GemmaPlannerLLM:
 
         kwargs: dict = {
             "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
-            "device_map": "auto" if device == "cuda" else None,
         }
+        if device == "cuda":
+            kwargs["device_map"] = "auto"
         if bnb is not None:
             kwargs["quantization_config"] = bnb
 
@@ -80,19 +85,23 @@ class GemmaPlannerLLM:
     @torch.inference_mode()
     def generate_json(self, user_prompt: str, max_new_tokens: int = 256) -> dict:
         messages = build_chat(user_prompt)
-        inputs = self.tokenizer.apply_chat_template(
-            messages, return_tensors="pt", add_generation_prompt=True,
-        ).to(self.model.device)
+        enc = self.tokenizer.apply_chat_template(
+            messages,
+            return_tensors="pt",
+            add_generation_prompt=True,
+            return_dict=True,
+        )
+        enc = {k: v.to(self.model.device) for k, v in enc.items()}
 
         out = self.model.generate(
-            inputs,
+            **enc,
             max_new_tokens=max_new_tokens,
             do_sample=False,
-            temperature=0.0,
             repetition_penalty=1.05,
             pad_token_id=self.tokenizer.eos_token_id,
         )
-        completion = self.tokenizer.decode(out[0][inputs.shape[-1]:], skip_special_tokens=True)
+        gen = out[0][enc["input_ids"].shape[-1]:]
+        completion = self.tokenizer.decode(gen, skip_special_tokens=True)
         return self._extract_json(completion)
 
     @staticmethod
