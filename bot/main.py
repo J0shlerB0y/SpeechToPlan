@@ -1,4 +1,4 @@
-"""Точка входа Telegram-бота. Запуск: `python -m bot.main`."""
+
 from __future__ import annotations
 
 import asyncio

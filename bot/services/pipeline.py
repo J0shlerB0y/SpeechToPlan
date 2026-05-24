@@ -1,8 +1,3 @@
-"""Тонкий фасад над HTTP-клиентом ML-сервиса.
-
-Хендлеры бота продолжают работать с `pipeline.process_text()` / `process_voice()`,
-не зная, что под капотом HTTP, а не локальные модели.
-"""
 from __future__ import annotations
 
 import logging
@@ -21,7 +16,6 @@ class AssistantPipeline:
     @classmethod
     async def build(cls, cfg) -> "AssistantPipeline":
         ml = MLClient(base_url=cfg.ml_service_url, timeout=cfg.ml_request_timeout)
-        # «прогревочный» вызов: убеждаемся, что ML-сервис вообще доступен
         try:
             status = await ml.health()
             logger.info("ML-сервис отвечает: %s", status)

@@ -4,12 +4,6 @@
 УЧЕБНЫЙ перебор по сетке (learning_rate × lora_rank × lora_alpha) — это даёт
 прозрачную и воспроизводимую таблицу результатов для защиты.
 
-Бюджет VRAM (RTX 3050 Ti, 4 ГБ):
-  * NF4-квантование базы (4-bit) -> ~250 МБ под веса
-  * gradient_checkpointing
-  * batch_size=2, grad_accum=8 -> эффективный batch 16
-  * paged_adamw_8bit оптимизатор
-
 Метрика выбора: minimum eval_loss на валидационной выборке.
 Для каждой комбинации сохраняется отдельный adapter; в конце копируется
 лучший в `<output>/best_adapter/`.

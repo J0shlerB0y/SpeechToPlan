@@ -1,4 +1,3 @@
-"""Конфигурация бота. Все переменные окружения читаются здесь."""
 from __future__ import annotations
 
 import os
