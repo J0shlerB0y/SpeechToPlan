@@ -47,18 +47,23 @@ class GemmaPlannerLLM:
         device: str = "cuda",
         adapter_path: str | None = None,
     ) -> "GemmaPlannerLLM":
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
 
-        bnb = _bnb_config(quant) if device == "cuda" else None
+        from dotenv import load_dotenv
+        load_dotenv()
+        print("TOKEN:", os.getenv("HF_TOKEN"))
         kwargs: dict = {
+            "token": os.getenv("HF_TOKEN"),
             "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
         }
+        bnb = _bnb_config(quant) if device == "cuda" else None
         if device == "cuda":
             kwargs["device_map"] = "auto"
         if bnb is not None:
             kwargs["quantization_config"] = bnb
+
+        tokenizer = AutoTokenizer.from_pretrained(model_path, **kwargs)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
         model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
         if device != "cuda":
@@ -68,7 +73,7 @@ class GemmaPlannerLLM:
         if adapter:
             from peft import PeftModel
             log.info("Накатываем LoRA адаптер: %s", adapter)
-            model = PeftModel.from_pretrained(model, adapter)
+            model = PeftModel.from_pretrained(model, adapter, **kwargs)
 
         model.eval()
         return cls(tokenizer=tokenizer, model=model, device=device)

@@ -50,6 +50,9 @@ def _load_models() -> None:
     llm_quant   = os.getenv("ML_LLM_QUANT", "int4")
     adapter     = os.getenv("ML_LLM_ADAPTER") or None
 
+    from dotenv import load_dotenv
+    load_dotenv()
+
     log.info("Загружаем ASR (whisper=%s/%s) на %s", asr_size, asr_compute, device)
     state.asr = WhisperASR.load(size=asr_size, device=device, compute_type=asr_compute)
 

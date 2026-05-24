@@ -1,4 +1,3 @@
-"""Обработка обычных текстовых сообщений."""
 from __future__ import annotations
 
 import logging

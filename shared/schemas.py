@@ -1,4 +1,3 @@
-"""Общие Pydantic-схемы, которыми обмениваются модули bot / asr_emotion / llm."""
 from __future__ import annotations
 
 from typing import Optional
@@ -14,7 +13,7 @@ class ASRResult(BaseModel):
 
 
 class EnrichedUtterance(BaseModel):
-    """Результат ASR — то, что уходит в LLM."""
+    """Результат ASR"""
     text: str
     source: str = "voice"
 
@@ -23,7 +22,7 @@ class EnrichedUtterance(BaseModel):
 
 
 class PlannerTask(BaseModel):
-    """Финальный JSON, который бот отдаёт пользователю / планировщику."""
+    """Финальный JSON, который бот отдаёт пользователю"""
     title: str
     description: Optional[str] = None
     deadline: Optional[str] = None
