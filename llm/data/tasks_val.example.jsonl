@@ -1,2 +1,0 @@
-{"input": "[Эмоция: angry] Текст: срочно перенести встречу на пятницу в 14", "output": {"title": "Перенести встречу", "description": null, "due_date": null, "due_time": "14:00", "priority": "critical", "tags": ["встреча"], "raw_emotion": "angry"}}
-{"input": "[Эмоция: neutral] Текст: забронировать столик на двоих в субботу", "output": {"title": "Бронь столика", "description": "На двоих, суббота", "due_date": null, "due_time": null, "priority": "medium", "tags": ["досуг"], "raw_emotion": "neutral"}}

@@ -1,13 +1,4 @@
-"""Инференс FunctionGemma-270m-it через transformers + bitsandbytes (4-bit/8-bit).
-
-Под RTX 3050 Ti 4 ГБ:
-  * INT4 NF4 + double quant — модель занимает ~250 МБ VRAM
-  * параллельно влезает whisper-tiny INT8 + wav2vec2 SER (≈1.5 ГБ суммарно)
-  * генерация greedy + json.loads валидация ответа
-
-Если LoRA-адаптер дообучен (см. training/qlora_grid_search.py) — указывай его
-через переменную окружения LLM_ADAPTER_PATH.
-"""
+"""Инференс FunctionGemma-270m-it — без эмоций, только текст → JSON-задача."""
 from __future__ import annotations
 
 import json
@@ -21,18 +12,16 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from llm.prompts import build_chat
-from shared.schemas import EnrichedUtterance, PlannerTask
+from shared.schemas import PlannerTask
 
 log = logging.getLogger(__name__)
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _bnb_config(quant: str):
-    """Импорт bitsandbytes ленивый: на Windows/CPU он часто не ставится,
-    а для quant='none' он и не нужен."""
     if quant not in {"int4", "int8"}:
         return None
-    from transformers import BitsAndBytesConfig  # noqa: WPS433
+    from transformers import BitsAndBytesConfig
 
     if quant == "int4":
         return BitsAndBytesConfig(
@@ -59,8 +48,10 @@ class GemmaPlannerLLM:
         adapter_path: str | None = None,
     ) -> "GemmaPlannerLLM":
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        bnb = _bnb_config(quant) if device == "cuda" else None
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
+        bnb = _bnb_config(quant) if device == "cuda" else None
         kwargs: dict = {
             "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
         }
@@ -83,8 +74,8 @@ class GemmaPlannerLLM:
         return cls(tokenizer=tokenizer, model=model, device=device)
 
     @torch.inference_mode()
-    def generate_json(self, user_prompt: str, max_new_tokens: int = 256) -> dict:
-        messages = build_chat(user_prompt)
+    def generate_json(self, text: str, max_new_tokens: int = 256) -> dict:
+        messages = build_chat(text)
         enc = self.tokenizer.apply_chat_template(
             messages,
             return_tensors="pt",
@@ -111,17 +102,16 @@ class GemmaPlannerLLM:
             raise ValueError(f"Модель не вернула JSON: {text!r}")
         return json.loads(m.group(0))
 
-    def to_task(self, utterance: EnrichedUtterance) -> PlannerTask:
-        prompt = utterance.to_prompt()
+    def to_task(self, text: str) -> PlannerTask:
+        """Принимает чистый текст (после Whisper), возвращает PlannerTask."""
         try:
-            data = self.generate_json(prompt)
+            data = self.generate_json(text)
         except (ValueError, json.JSONDecodeError) as e:
             log.warning("LLM вернула невалидный JSON: %s — fallback", e)
             data = {
-                "title": utterance.text[:80] or "Новая задача",
-                "priority": "high" if utterance.emotion.is_urgent else "medium",
-                "tags": [],
-                "raw_emotion": utterance.emotion.label.value,
+                "title": text[:80] or "Новая задача",
+                "description": None,
+                "deadline": None,
+                "priority": "medium",
             }
-        # Pydantic валидирует контракт.
         return PlannerTask(**data)
