@@ -20,6 +20,7 @@ import argparse
 import itertools
 import json
 import logging
+import os
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -69,9 +70,13 @@ def _bnb_4bit() -> BitsAndBytesConfig:
         bnb_4bit_compute_dtype=torch.float16,
     )
 
-
 def _load_base(model_path: str):
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    from dotenv import load_dotenv
+    load_dotenv()
+    kwargs: dict = {
+        "token": os.getenv("HF_TOKEN")
+    }
+    tokenizer = AutoTokenizer.from_pretrained(model_path, **kwargs)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
@@ -145,7 +150,7 @@ def _train_one(
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         data_collator=collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
     train_metrics = trainer.train().metrics
     eval_metrics = trainer.evaluate()
@@ -186,10 +191,16 @@ def main() -> None:
     tokenizer, _ = _load_base(args.base_model)
     train_raw = load_jsonl(args.train_file)
     eval_raw = load_jsonl(args.val_file)
+
     train_ds = to_chat_examples(train_raw, tokenizer, SYSTEM_PROMPT)
     eval_ds = to_chat_examples(eval_raw, tokenizer, SYSTEM_PROMPT)
 
-    # ------- Явный перебор по сетке -------
+    print("Колонки:", train_ds.column_names)
+    print("Первый пример:", train_ds[0])
+    print("Тип input_ids:", type(train_ds[0]["input_ids"]))
+    print("Тип labels:", type(train_ds[0]["labels"]))
+    print("Тип первого элемента labels:", type(train_ds[0]["labels"][0]))
+
     grid = [
         GridPoint(learning_rate=lr, lora_rank=r, lora_alpha=a)
         for lr, r, a in itertools.product(args.lrs, args.ranks, args.alphas)

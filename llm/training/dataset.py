@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from datasets import Dataset
+from datasets import Dataset, Features, Sequence, Value
 
 
 def load_jsonl(path: str | Path) -> Dataset:
@@ -23,9 +23,7 @@ def load_jsonl(path: str | Path) -> Dataset:
             rows.append(json.loads(line))
     return Dataset.from_list(rows)
 
-
 def to_chat_examples(ds: Dataset, tokenizer, system_prompt: str, max_len: int = 1024) -> Dataset:
-    """Превращает {input, output} в токенизированные обучающие примеры."""
 
     def _format(example):
         target = json.dumps(example["output"], ensure_ascii=False)
@@ -35,8 +33,24 @@ def to_chat_examples(ds: Dataset, tokenizer, system_prompt: str, max_len: int = 
             {"role": "assistant", "content": target},
         ]
         text = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=False)
-        enc = tokenizer(text, truncation=True, max_length=max_len)
-        enc["labels"] = enc["input_ids"].copy()
-        return enc
+        enc = tokenizer(text, truncation=True, max_length=max_len, padding="max_length")
 
-    return ds.map(_format, remove_columns=ds.column_names)
+        pad_id = tokenizer.pad_token_id
+        labels = [
+            token_id if token_id != pad_id else -100
+            for token_id in enc["input_ids"]
+        ]
+
+        return {
+            "input_ids": list(enc["input_ids"]),
+            "attention_mask": list(enc["attention_mask"]),
+            "labels": labels,
+        }
+
+    features = Features({
+        "input_ids": Sequence(Value("int64")),
+        "attention_mask": Sequence(Value("int64")),
+        "labels": Sequence(Value("int64")),
+    })
+
+    return ds.map(_format, remove_columns=ds.column_names, features=features)
