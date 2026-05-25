@@ -1,4 +1,3 @@
-"""Обёртка над faster-whisper. INT8 на CPU/GPU — минимум VRAM."""
 from __future__ import annotations
 
 from dataclasses import dataclass
