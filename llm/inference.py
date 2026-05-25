@@ -9,10 +9,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from llm.prompts import build_chat
 from shared.schemas import PlannerTask
+
+load_dotenv()
 
 log = logging.getLogger(__name__)
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -74,7 +77,8 @@ class GemmaPlannerLLM:
             from peft import PeftModel
             log.info("Накатываем LoRA адаптер: %s", adapter)
             model = PeftModel.from_pretrained(model, adapter, **kwargs)
-
+        else:
+            log.info("запуск без адаптераЮ путь, %s", adapter)
         model.eval()
         return cls(tokenizer=tokenizer, model=model, device=device)
 
@@ -101,14 +105,21 @@ class GemmaPlannerLLM:
         return self._extract_json(completion)
 
     @staticmethod
-    def _extract_json(text: str) -> dict:
-        m = JSON_RE.search(text)
-        if not m:
-            raise ValueError(f"Модель не вернула JSON: {text!r}")
-        return json.loads(m.group(0))
+    def _extract_json(self, text: str) -> dict:
+        try:
+            match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+
+            match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+
+            return json.loads(text.strip())
+        except (json.JSONDecodeError, AttributeError):
+            return {"error": "Failed to decode JSON", "raw": text}
 
     def to_task(self, text: str) -> PlannerTask:
-        """Принимает чистый текст (после Whisper), возвращает PlannerTask."""
         try:
             data = self.generate_json(text)
         except (ValueError, json.JSONDecodeError) as e:

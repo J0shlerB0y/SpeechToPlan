@@ -1,28 +1,8 @@
-"""Дообучение Whisper-tiny LoRA на русских датасетах.
-
-Датасеты (суммарно ~60 000 записей):
-  - SberDevices/Golos          — ~10 000 записей
-  - bond005/ru_open_stt        — ~20 000 записей (OpenSTT фрагменты)
-  - bond005/rulibrispeech_cuts — ~30 000 записей (RuLibriSpeech)
-
-  ! Перед запуском проверь, что имена репозиториев актуальны на HuggingFace.
-  ! Если какого-то нет — просто убери его из DATASETS в конфиге ниже.
-
-Метрики: WER (Word Error Rate), CER (Character Error Rate)
-
-Подбор гиперпараметров — двухфазный:
-  Фаза 1 (быстрый grid search): 5 000 примеров, 1 эпоха, перебор LR и LoRA rank
-  Фаза 2 (полное обучение): победившие параметры, все данные, нужное кол-во эпох
-
-Целевое время обучения: ~2 часа на RTX 3050 Ti (4 ГБ VRAM).
-
-Запуск:
-    python -m asr_emotion.training.train_whisper_lora --output ./checkpoints/whisper-lora-ru
-
-Все параметры можно переопределить через CLI (см. argparse в main).
-"""
 from __future__ import annotations
-
+import io
+import av
+import numpy as np
+import soundfile
 import argparse
 import itertools
 import json
@@ -34,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from datasets import Audio, concatenate_datasets, load_dataset, Dataset
+from datasets import Audio, concatenate_datasets, load_dataset, Dataset, load_from_disk
 from dotenv import load_dotenv
 from peft import LoraConfig, get_peft_model
 from transformers import (
@@ -70,19 +50,12 @@ DATASETS = [
         "max_eval":   500,
     },
     {
-        "repo":       "bond005/taiga_speech",
+        "repo":       "bond005/taiga_speech_v2",
         "config":     None,
         "text_field": "transcription",
-        "max_train":  20_000,
-        "max_eval":   800,
-    },
-    {
-        "repo":       "bond005/rulibrispeech",
-        "config":     None,
-        "text_field": "transcription",
-        "max_train":  20_000,
-        "max_eval":   800,
-    },
+        "max_train":  12_000,
+        "max_eval":   500,
+    }
 ]
 
 @dataclass
@@ -103,40 +76,39 @@ class GridResult:
     adapter_dir: str
 
 
-# ---------------------------------------------------------------------------
-# Загрузка и объединение датасетов
-# ---------------------------------------------------------------------------
 def _load_one(cfg: dict, split: str) -> Any | None:
-    """Загружает один датасет, возвращает None если недоступен."""
     max_n = cfg["max_train"] if split == "train" else cfg["max_eval"]
-    repo = cfg["repo"]
+    repo  = cfg["repo"]
     try:
-        kwargs = dict(split=split, token=HF_TOKEN, streaming=True, )
-        if cfg["config"]:
-            ds = load_dataset(repo, cfg["config"], **kwargs)
-        else:
-            ds = load_dataset(repo, **kwargs)
-
-        ds = Dataset.from_list(list(ds.take(max_n)))
         actual_split = split
         if split == "validation":
-            try:
-                ds = load_dataset(repo, split="validation", token=HF_TOKEN, streaming=True)
-            except Exception:
-                ds = load_dataset(repo, split="test", token=HF_TOKEN, streaming=True)
-                actual_split = "test"
+            for candidate in ["validation", "test"]:
+                try:
+                    load_dataset(repo, split=candidate, token=HF_TOKEN, streaming=True)
+                    actual_split = candidate
+                    break
+                except Exception:
+                    continue
+            else:
+                actual_split = "train"
+
+        load_kwargs = dict(split=actual_split, token=HF_TOKEN, streaming=True)
+        if cfg["config"]:
+            ds = load_dataset(repo, cfg["config"], **load_kwargs)
         else:
-            ds = load_dataset(repo, split=split, token=HF_TOKEN, streaming=True)
+            ds = load_dataset(repo, **load_kwargs)
 
-        ds = ds.cast_column("audio", Audio(sampling_rate=16_000))
+        if split == "validation" and actual_split == "train":
+            ds = ds.skip(cfg["max_train"])
 
-        # Приводим поле текста к единому имени "sentence"
+        ds = Dataset.from_list(list(ds.take(max_n)))
+
         if cfg["text_field"] != "sentence":
             ds = ds.rename_column(cfg["text_field"], "sentence")
 
         keep = {"audio", "sentence"}
         ds = ds.remove_columns([c for c in ds.column_names if c not in keep])
-        log.info("  ✓ %s [%s]: %d примеров", repo, split, len(ds))
+        log.info("  ✓ %s [%s→%s]: %d примеров", repo, split, actual_split, len(ds))
         return ds
 
     except Exception as exc:
@@ -144,40 +116,68 @@ def _load_one(cfg: dict, split: str) -> Any | None:
         return None
 
 
+CACHE_DIR = Path("E:/Dev/Models/datasets/prepaired")  # куда сохраняем
+
 def build_datasets() -> tuple[Any, Any]:
-    log.info("=== Загрузка датасетов ===")
+    cache_train = CACHE_DIR / "train"
+    cache_eval  = CACHE_DIR / "eval"
+
+    if cache_train.exists() and cache_eval.exists():
+        log.info("Загружаем датасеты из кэша")
+        return load_from_disk(str(cache_train)), load_from_disk(str(cache_eval))
+
+    log.info("Первый запуск")
     trains, evals = [], []
     for cfg in DATASETS:
         tr = _load_one(cfg, "train")
         ev = _load_one(cfg, "validation")
-        if tr:
-            trains.append(tr)
-        if ev:
-            evals.append(ev)
+        if tr: trains.append(tr)
+        if ev: evals.append(ev)
 
     if not trains:
-        raise RuntimeError("Ни один датасет не загрузился — проверь HF_TOKEN и имена репозиториев.")
+        raise RuntimeError("Ни один датасет не загрузился")
 
     train_ds = concatenate_datasets(trains).shuffle(seed=42)
-    eval_ds = concatenate_datasets(evals).shuffle(seed=42)
-    log.info("Итого train=%d  eval=%d", len(train_ds), len(eval_ds))
+    eval_ds  = concatenate_datasets(evals).shuffle(seed=42) if evals else \
+               train_ds.select(range(min(500, len(train_ds))))
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    train_ds.save_to_disk(str(cache_train))
+    eval_ds.save_to_disk(str(cache_eval))
+    log.info("Датасеты сохранены в %s", CACHE_DIR)
+
     return train_ds, eval_ds
 
 
 def make_prepare_fn(processor: Any):
     def _prepare(batch):
-        audio = batch["audio"]
+        audio_info = batch["audio"]
+
+        if audio_info.get("bytes"):
+            container = av.open(io.BytesIO(audio_info["bytes"]))
+        elif audio_info.get("path"):
+            container = av.open(audio_info["path"])
+        else:
+            raise ValueError("Нет ни bytes ни path в audio")
+
+        stream = container.streams.audio[0]
+        samples = []
+        for frame in container.decode(stream):
+            samples.append(frame.to_ndarray().flatten())
+        array = np.concatenate(samples).astype(np.float32)
+
+        sr = stream.sample_rate
+        if sr != 16_000:
+            import librosa
+            array = librosa.resample(array, orig_sr=sr, target_sr=16_000)
+
         batch["input_features"] = processor.feature_extractor(
-            audio["array"], sampling_rate=audio["sampling_rate"]
+            array, sampling_rate=16_000
         ).input_features[0]
         batch["labels"] = processor.tokenizer(batch["sentence"]).input_ids
         return batch
     return _prepare
 
-
-# ---------------------------------------------------------------------------
-# Коллатор батчей
-# ---------------------------------------------------------------------------
 @dataclass
 class DataCollator:
     processor: Any
@@ -191,16 +191,12 @@ class DataCollator:
         labels = labels_batch["input_ids"].masked_fill(
             labels_batch.attention_mask.ne(1), -100
         )
-        # Убираем decoder_start_token если он попал в начало
         if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all().cpu().item():
             labels = labels[:, 1:]
         batch["labels"] = labels
         return batch
 
 
-# ---------------------------------------------------------------------------
-# Метрики: WER + CER
-# ---------------------------------------------------------------------------
 def make_metrics_fn(processor: Any):
     import evaluate
     wer_metric = evaluate.load("wer")
@@ -217,7 +213,6 @@ def make_metrics_fn(processor: Any):
         wer = 100 * wer_metric.compute(predictions=pred_str, references=label_str)
         cer = 100 * cer_metric.compute(predictions=pred_str, references=label_str)
 
-        # Несколько примеров в лог — полезно для отладки
         for p, r in zip(pred_str[:3], label_str[:3]):
             log.info("  pred : %s", p)
             log.info("  ref  : %s", r)
@@ -227,9 +222,6 @@ def make_metrics_fn(processor: Any):
     return _compute
 
 
-# ---------------------------------------------------------------------------
-# Загрузка базовой модели с LoRA
-# ---------------------------------------------------------------------------
 def load_model_with_lora(base_model: str, lora_rank: int, lora_alpha: int) -> Any:
     model = WhisperForConditionalGeneration.from_pretrained(
         base_model,
@@ -254,9 +246,6 @@ def load_model_with_lora(base_model: str, lora_rank: int, lora_alpha: int) -> An
     return model
 
 
-# ---------------------------------------------------------------------------
-# Одиночный тренировочный прогон
-# ---------------------------------------------------------------------------
 def train_one(
     point: GridPoint,
     base_model: str,
@@ -321,9 +310,6 @@ def train_one(
     return GridResult(point=point, wer=wer, cer=cer, adapter_dir=str(adapter_dir))
 
 
-# ---------------------------------------------------------------------------
-# Главная точка входа
-# ---------------------------------------------------------------------------
 def main() -> None:
     p = argparse.ArgumentParser(description="Whisper LoRA fine-tune на русском")
     p.add_argument("--base-model",  default="openai/whisper-tiny")
@@ -347,12 +333,10 @@ def main() -> None:
 
     print(HF_TOKEN)
 
-    # Загружаем процессор один раз — он нужен для подготовки и метрик
     processor = WhisperProcessor.from_pretrained(
         args.base_model, language="ru", task="transcribe", token=HF_TOKEN
     )
 
-    # Загружаем и подготавливаем данные
     train_raw, eval_raw = build_datasets()
     prepare_fn = make_prepare_fn(processor)
     prep_kwargs = dict(remove_columns=train_raw.column_names, num_proc=2)
@@ -362,9 +346,6 @@ def main() -> None:
     log.info("Подготовка eval...")
     eval_ds = eval_raw.map(prepare_fn, **{**prep_kwargs, "remove_columns": eval_raw.column_names})
 
-    # -----------------------------------------------------------------------
-    # Фаза 1: grid search на подвыборке
-    # -----------------------------------------------------------------------
     grid = [
         GridPoint(lr=lr, lora_rank=r, lora_alpha=a)
         for lr, r, a in itertools.product(args.lrs, args.ranks, args.alphas)
