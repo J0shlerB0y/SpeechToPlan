@@ -84,50 +84,82 @@ class GemmaPlannerLLM:
 
     @torch.inference_mode()
     def generate_json(self, text: str, max_new_tokens: int = 256) -> dict:
+        # ПЕРЕД ГЕНЕРАЦИЕЙ: Убедимся, что модель в режиме оценки
+        self.model.eval()
+
         messages = build_chat(text)
-        enc = self.tokenizer.apply_chat_template(
+
+        # Используем tokenize=False для контроля над текстом
+        prompt = self.tokenizer.apply_chat_template(
             messages,
-            return_tensors="pt",
-            add_generation_prompt=True,
-            return_dict=True,
+            tokenize=False,
+            add_generation_prompt=True
         )
-        enc = {k: v.to(self.model.device) for k, v in enc.items()}
 
-        out = self.model.generate(
-            **enc,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            repetition_penalty=1.05,
-            pad_token_id=self.tokenizer.eos_token_id,
-        )
-        gen = out[0][enc["input_ids"].shape[-1]:]
-        completion = self.tokenizer.decode(gen, skip_special_tokens=True)
-        return self._extract_json(completion)
+        # Добавляем { только если мы уверены, что модель молчит без этого
+        # prompt += "{"
 
-    @staticmethod
-    def _extract_json(self, text: str) -> dict:
+        enc = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+
         try:
+            out = self.model.generate(
+                **enc,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,  # СТАВИМ FALSE ОБРАТНО
+                # repetition_penalty лучше пока убрать или поставить 1.0
+                repetition_penalty=1.0,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+
+            gen = out[0][enc["input_ids"].shape[-1]:]
+            completion = self.tokenizer.decode(gen, skip_special_tokens=True)
+
+            # Если мы добавляли { в промпт вручную, приклеиваем её здесь
+            # completion = "{" + completion
+
+            print(f"\n--- LLM OUTPUT ---\n{completion}\n------------------")
+            return self._extract_json(completion)
+
+        except Exception as e:
+            print(f"Критическая ошибка генерации: {e}")
+            return {"error": "generation_failed"}
+
+    def _extract_json(self, text: str) -> dict:
+        """Метод для очистки ответа модели от мусора и парсинга JSON."""
+        import json
+        import re
+
+        try:
+            # 1. Ищем JSON блоки (модель часто пишет ```json ... ```)
             match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
             if match:
                 return json.loads(match.group(1))
 
+            # 2. Если блоков нет, ищем просто что-то похожее на структуру { }
             match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
             if match:
                 return json.loads(match.group(1))
 
+            # 3. Крайний случай — пробуем парсить строку целиком
             return json.loads(text.strip())
         except (json.JSONDecodeError, AttributeError):
-            return {"error": "Failed to decode JSON", "raw": text}
+            # Если всё упало, возвращаем хотя бы сырой текст, чтобы не валить сервер
+            return {"error": "invalid_json", "raw_text": text}
 
-    def to_task(self, text: str) -> PlannerTask:
+    def to_task(self, text: str) -> "PlannerTask":  # Или как там у тебя импортируется PlannerTask
+        data = self.generate_json(text)
+
+        # Если наша функция-парсер вернула ошибку, возвращаем пустую/дефолтную задачу
+        if "error" in data:
+            print(f"ОШИБКА LLM: Не удалось распарсить JSON. Сырой текст: '{data.get('raw_text')}'")
+            # Возвращаем заглушку, чтобы сервер не падал с 500 ошибкой
+            return PlannerTask(title="Не удалось распознать план",
+                               is_error=True)  # Добавь поле is_error в Pydantic, если его нет
+
         try:
-            data = self.generate_json(text)
-        except (ValueError, json.JSONDecodeError) as e:
-            log.warning("LLM вернула невалидный JSON: %s — fallback", e)
-            data = {
-                "title": text[:80] or "Новая задача",
-                "description": None,
-                "deadline": None,
-                "priority": "medium",
-            }
-        return PlannerTask(**data)
+            return PlannerTask(**data)
+        except Exception as e:
+            # На случай если JSON валидный, но не хватает полей для Pydantic
+            print(f"ОШИБКА Pydantic: {e}. Данные: {data}")
+            return PlannerTask(title="Ошибка валидации плана")

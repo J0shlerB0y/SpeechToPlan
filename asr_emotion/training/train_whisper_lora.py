@@ -76,43 +76,41 @@ class GridResult:
     adapter_dir: str
 
 
-def _load_one(cfg: dict, split: str) -> Any | None:
-    max_n = cfg["max_train"] if split == "train" else cfg["max_eval"]
-    repo  = cfg["repo"]
+def _load_one(cfg: dict, split: str) -> Dataset | None:
+    repo = cfg["repo"]
     try:
-        actual_split = split
-        if split == "validation":
-            for candidate in ["validation", "test"]:
-                try:
-                    load_dataset(repo, split=candidate, token=HF_TOKEN, streaming=True)
-                    actual_split = candidate
-                    break
-                except Exception:
-                    continue
-            else:
-                actual_split = "train"
+        # Загружаем датасет целиком (не в стриминге, так надежнее для 10к записей)
+        # Если памяти мало, можно оставить streaming=True, но не делать list()
+        ds = load_dataset(repo, cfg["config"], token=HF_TOKEN, split="train")
 
-        load_kwargs = dict(split=actual_split, token=HF_TOKEN, streaming=True)
-        if cfg["config"]:
-            ds = load_dataset(repo, cfg["config"], **load_kwargs)
-        else:
-            ds = load_dataset(repo, **load_kwargs)
-
-        if split == "validation" and actual_split == "train":
-            ds = ds.skip(cfg["max_train"])
-
-        ds = Dataset.from_list(list(ds.take(max_n)))
-
+        # Переименовываем колонку текста
         if cfg["text_field"] != "sentence":
             ds = ds.rename_column(cfg["text_field"], "sentence")
 
-        keep = {"audio", "sentence"}
-        ds = ds.remove_columns([c for c in ds.column_names if c not in keep])
-        log.info("  ✓ %s [%s→%s]: %d примеров", repo, split, actual_split, len(ds))
+        # Оставляем только нужное
+        ds = ds.select_columns(["audio", "sentence"])
+
+        # Принудительно ставим частоту дискретизации 16кГц (авто-ресемплинг)
+        ds = ds.cast_column("audio", Audio(sampling_rate=16_000))
+
+        # Логика разделения
+        if split == "train":
+            # Берем первые N записей
+            n = min(cfg["max_train"], len(ds))
+            ds = ds.select(range(n))
+        else:
+            # Для валидации берем с конца или фиксированный срез
+            n_eval = cfg["max_eval"]
+            total = len(ds)
+            # Берем последние n_eval записей
+            start = max(0, total - n_eval)
+            ds = ds.select(range(start, total))
+
+        log.info("  ✓ %s [%s]: %d примеров", repo, split, len(ds))
         return ds
 
     except Exception as exc:
-        log.warning("  ✗ %s [%s] пропущен: %s", repo, split, exc)
+        log.warning("  ✗ %s [%s] ошибка: %s", repo, split, exc)
         return None
 
 
@@ -151,31 +149,16 @@ def build_datasets() -> tuple[Any, Any]:
 
 def make_prepare_fn(processor: Any):
     def _prepare(batch):
-        audio_info = batch["audio"]
-
-        if audio_info.get("bytes"):
-            container = av.open(io.BytesIO(audio_info["bytes"]))
-        elif audio_info.get("path"):
-            container = av.open(audio_info["path"])
-        else:
-            raise ValueError("Нет ни bytes ни path в audio")
-
-        stream = container.streams.audio[0]
-        samples = []
-        for frame in container.decode(stream):
-            samples.append(frame.to_ndarray().flatten())
-        array = np.concatenate(samples).astype(np.float32)
-
-        sr = stream.sample_rate
-        if sr != 16_000:
-            import librosa
-            array = librosa.resample(array, orig_sr=sr, target_sr=16_000)
+        # audio_info["array"] уже будет в 16кГц благодаря cast_column
+        audio = batch["audio"]
 
         batch["input_features"] = processor.feature_extractor(
-            array, sampling_rate=16_000
+            audio["array"], sampling_rate=16_000
         ).input_features[0]
+
         batch["labels"] = processor.tokenizer(batch["sentence"]).input_ids
         return batch
+
     return _prepare
 
 @dataclass
