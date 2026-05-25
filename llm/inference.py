@@ -84,20 +84,16 @@ class GemmaPlannerLLM:
 
     @torch.inference_mode()
     def generate_json(self, text: str, max_new_tokens: int = 256) -> dict:
-        # ПЕРЕД ГЕНЕРАЦИЕЙ: Убедимся, что модель в режиме оценки
         self.model.eval()
-
         messages = build_chat(text)
 
-        # Используем tokenize=False для контроля над текстом
         prompt = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True
         )
 
-        # Добавляем { только если мы уверены, что модель молчит без этого
-        # prompt += "{"
+        prompt += "{"
 
         enc = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
@@ -105,8 +101,7 @@ class GemmaPlannerLLM:
             out = self.model.generate(
                 **enc,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,  # СТАВИМ FALSE ОБРАТНО
-                # repetition_penalty лучше пока убрать или поставить 1.0
+                do_sample=False,
                 repetition_penalty=1.0,
                 pad_token_id=self.tokenizer.eos_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
@@ -115,14 +110,13 @@ class GemmaPlannerLLM:
             gen = out[0][enc["input_ids"].shape[-1]:]
             completion = self.tokenizer.decode(gen, skip_special_tokens=True)
 
-            # Если мы добавляли { в промпт вручную, приклеиваем её здесь
-            # completion = "{" + completion
+            completion = "{" + completion
 
             print(f"\n--- LLM OUTPUT ---\n{completion}\n------------------")
             return self._extract_json(completion)
 
         except Exception as e:
-            print(f"Критическая ошибка генерации: {e}")
+            log.error(f"Критическая ошибка генерации: {e}")
             return {"error": "generation_failed"}
 
     def _extract_json(self, text: str) -> dict:

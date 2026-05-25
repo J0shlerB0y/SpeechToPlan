@@ -169,6 +169,11 @@ class DataCollator:
         input_features = [{"input_features": f["input_features"]} for f in features]
         batch = self.processor.feature_extractor.pad(input_features, return_tensors="pt")
 
+        # --- ДОБАВЬТЕ ЭТУ СТРОКУ ---
+        # Если мы используем fp16, входные фичи тоже должны быть float16
+        batch["input_features"] = batch["input_features"].to(torch.float16)
+        # ---------------------------
+
         label_features = [{"input_ids": f["labels"]} for f in features]
         labels_batch = self.processor.tokenizer.pad(label_features, return_tensors="pt")
         labels = labels_batch["input_ids"].masked_fill(
@@ -213,6 +218,11 @@ def load_model_with_lora(base_model: str, lora_rank: int, lora_alpha: int) -> An
         token=HF_TOKEN,
     )
     model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+
+    model.generation_config.language = "russian"
+    model.generation_config.task = "transcribe"
+    model.generation_config.forced_decoder_ids = None
     model.config.suppress_tokens = []
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
@@ -373,9 +383,6 @@ def main() -> None:
             json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-    # -----------------------------------------------------------------------
-    # Фаза 2: полное обучение с лучшими параметрами
-    # -----------------------------------------------------------------------
     log.info("=== Фаза 2: полное обучение  %s ===", best_point.slug())
     final_result = train_one(
         point=best_point,
