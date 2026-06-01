@@ -156,7 +156,44 @@ docker run --rm --add-host=host.docker.internal:host-gateway speechtoplan-bot:la
 
 ## 4. Обучение моделей (отдельные запуски, не нужны для работы бота)
 
-### 4.1 LoRA-дообучение Whisper-tiny с метрикой WER
+### 4.0 Подготовка датасета v2
+```powershell
+# Сгенерировать сложные кейсы (~162 примера)
+& "E:\dev\Python\313\python.exe" -m llm.data.make_complex_seed
+
+# Обогатить существующие 434 + добавить seed → v2
+& "E:\dev\Python\313\python.exe" -m llm.data.build_dataset
+# Результат: llm/data/tasks_train_v2.jsonl (572) + tasks_val_v2.jsonl (72)
+```
+
+### 4.1 QLoRA Grid Search + финальное обучение LLM (Qwen2.5)
+```powershell
+# Smoke-тест пайплайна (16 примеров, 1 эпоха, ~10 мин)
+& "E:\dev\Python\313\python.exe" -m llm.training.qlora_grid_search `
+    --base-model Qwen/Qwen2.5-0.5B-Instruct `
+    --quant nf4 --device cuda --epochs 1 --final-epochs 0 `
+    --train-limit 16 --val-limit 6 --lrs 3e-4 --ranks 16 --alphas 32
+
+# Полный прогон: 2 точки grid (5 эпох) + финал 15 эпох (~2-3 ч)
+& "E:\dev\Python\313\python.exe" -m llm.training.qlora_grid_search `
+    --base-model Qwen/Qwen2.5-0.5B-Instruct `
+    --quant nf4 --device cuda `
+    --epochs 5 --final-epochs 15 `
+    --batch 2 --grad-accum 8 `
+    --lrs 1e-4 3e-4 --ranks 16 --alphas 32 `
+    --output .\checkpoints\qwen05-grid
+
+# Или на 1.5B (лучше качество, но медленнее)
+& "E:\dev\Python\313\python.exe" -m llm.training.qlora_grid_search `
+    --base-model Qwen/Qwen2.5-1.5B-Instruct `
+    --output .\checkpoints\qwen-grid
+# ... те же параметры
+```
+
+Результат: `checkpoints/qwen05-grid/best_adapter/` (или `qwen-grid/`)  
+Таблица Grid Search: `checkpoints/qwen05-grid/grid_summary.json`
+
+### 4.2 LoRA-дообучение Whisper-tiny с метрикой WER
 ```powershell
 & "E:\dev\Python\313\python.exe" -m asr_emotion.training.train_whisper_lora `
     --base-model openai/whisper-tiny `
@@ -165,20 +202,26 @@ docker run --rm --add-host=host.docker.internal:host-gateway speechtoplan-bot:la
     --output .\checkpoints\whisper-tiny-ru-lora
 ```
 
-### 4.2 QLoRA + Grid Search для FunctionGemma
-```powershell
-& "E:\dev\Python\313\python.exe" -m llm.training.qlora_grid_search `
-    --train-file .\llm\data\tasks_train.jsonl `
-    --val-file   .\llm\data\tasks_val.jsonl `
-    --output     .\checkpoints\gemma-grid `
-    --lrs 5e-5 1e-4 3e-4 --ranks 8 16 --alphas 16 32
-```
-
-После завершения — лучший адаптер лежит в `.\checkpoints\gemma-grid\best_adapter`.
+После завершения — адаптер в `.\checkpoints\qwen05-grid\best_adapter`.
 Подключи его к ML-сервису:
 ```powershell
-$env:ML_LLM_ADAPTER = "$PWD\checkpoints\gemma-grid\best_adapter"
+$env:ML_LLM_MODEL   = "Qwen/Qwen2.5-0.5B-Instruct"
+$env:ML_LLM_ADAPTER = "$PWD\checkpoints\qwen05-grid\best_adapter"
 & "E:\dev\Python\313\python.exe" -m uvicorn ml_service.server:app --host 0.0.0.0 --port 8000
+```
+
+### 4.3 Eval «до/после»
+```powershell
+# Baseline (Qwen без адаптера, с few-shot)
+& "E:\dev\Python\313\python.exe" -m scripts.eval_llm --few-shot --device cuda `
+    --model Qwen/Qwen2.5-0.5B-Instruct `
+    --out .\checkpoints\eval_qwen_baseline.json
+
+# После обучения
+& "E:\dev\Python\313\python.exe" -m scripts.eval_llm --device cuda `
+    --model Qwen/Qwen2.5-0.5B-Instruct `
+    --adapter .\checkpoints\qwen05-grid\best_adapter `
+    --out .\checkpoints\eval_qwen_adapter.json
 ```
 
 ---

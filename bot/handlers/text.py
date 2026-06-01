@@ -21,4 +21,4 @@ async def handle_text(message: Message, pipeline: AssistantPipeline) -> None:
         logger.exception("LLM пайплайн упал на тексте")
         await message.answer("Не получилось разобрать сообщение, попробуй переформулировать.")
         return
-    await message.answer(format_task(task), parse_mode="Markdown")
+    await message.answer(format_task(task))  # parse_mode=HTML по умолчанию (см. bot/main.py)

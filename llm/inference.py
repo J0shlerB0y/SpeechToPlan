@@ -1,4 +1,4 @@
-"""Инференс FunctionGemma-270m-it — без эмоций, только текст → JSON-задача."""
+"""Инференс FunctionGemma-270m-it: текст → JSON-задача (PlannerTask)."""
 from __future__ import annotations
 
 import json
@@ -16,9 +16,11 @@ from llm.prompts import build_chat
 from shared.schemas import PlannerTask
 
 load_dotenv()
-
 log = logging.getLogger(__name__)
-JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+# Жадный поиск JSON: первый '{' .. последний '}' (поддерживает вложенность).
+_JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)
+_JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _bnb_config(quant: str):
@@ -41,119 +43,159 @@ class GemmaPlannerLLM:
     tokenizer: Any
     model: Any
     device: str
+    has_adapter: bool = False
 
     @classmethod
     def load(
         cls,
-        model_path: str = "google/functiongemma-270m-it",
+        model_path: str = "Qwen/Qwen2.5-0.5B-Instruct",
         quant: str = "int4",
         device: str = "cuda",
         adapter_path: str | None = None,
     ) -> "GemmaPlannerLLM":
+        hf_token = os.getenv("HF_TOKEN")
+        log.info("HF_TOKEN: %s", "set" if hf_token else "missing")
 
-        from dotenv import load_dotenv
-        load_dotenv()
-        print("TOKEN:", os.getenv("HF_TOKEN"))
+        tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        adapter = adapter_path or os.getenv("LLM_ADAPTER_PATH")
+
+        # Если адаптер был сохранён старой peft (несовпадение shape на bnb-базе) —
+        # выставите LLM_FP16_FALLBACK=1, тогда база грузится в fp16 (~3 ГБ) без bnb.
+        fp16_fallback = adapter and os.getenv("LLM_FP16_FALLBACK", "0") == "1"
+        effective_quant = "none" if fp16_fallback else quant
+
         kwargs: dict = {
-            "token": os.getenv("HF_TOKEN"),
             "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
+            "token": hf_token,
         }
-        bnb = _bnb_config(quant) if device == "cuda" else None
+        bnb = _bnb_config(effective_quant) if device == "cuda" else None
         if device == "cuda":
             kwargs["device_map"] = "auto"
         if bnb is not None:
             kwargs["quantization_config"] = bnb
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path, **kwargs)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        if effective_quant != quant:
+            log.info("LLM_FP16_FALLBACK=1 → грузим базу fp16 (вместо %s) чтобы избежать shape mismatch", quant)
 
         model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
         if device != "cuda":
             model.to(device)
 
-        adapter = adapter_path or os.getenv("LLM_ADAPTER_PATH")
+        has_adapter = False
         if adapter:
             from peft import PeftModel
-            log.info("Накатываем LoRA адаптер: %s", adapter)
-            model = PeftModel.from_pretrained(model, adapter, **kwargs)
+            log.info("Накатываем LoRA-адаптер: %s", adapter)
+            model = PeftModel.from_pretrained(model, adapter, token=hf_token)
+            has_adapter = True
         else:
-            log.info("запуск без адаптераЮ путь, %s", adapter)
+            log.info("Запуск без адаптера (чистая база)")
+
         model.eval()
-        return cls(tokenizer=tokenizer, model=model, device=device)
+        return cls(tokenizer=tokenizer, model=model, device=device, has_adapter=has_adapter)
 
+    # ---------- генерация ----------
     @torch.inference_mode()
-    def generate_json(self, text: str, max_new_tokens: int = 256) -> dict:
-        self.model.eval()
-        messages = build_chat(text)
+    def generate_raw(self, text: str, max_new_tokens: int = 448, few_shot: bool = False) -> str:
+        """Вернуть текст ответа модели. few_shot=True — для baseline без адаптера."""
+        messages = build_chat(text, few_shot=few_shot)
 
-        prompt = self.tokenizer.apply_chat_template(
+        # apply_chat_template сам ставит <start_of_turn>model\n в конце
+        # благодаря add_generation_prompt=True. НИЧЕГО после неё дописывать нельзя!
+        enc = self.tokenizer.apply_chat_template(
             messages,
-            tokenize=False,
-            add_generation_prompt=True
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
         )
+        enc = {k: v.to(self.model.device) for k, v in enc.items()}
+        prompt_len = enc["input_ids"].shape[-1]
 
-        prompt += "{"
+        out = self.model.generate(
+            **enc,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            num_beams=1,
+            repetition_penalty=1.0,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+        gen_ids = out[0][prompt_len:]
+        completion = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
 
-        enc = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        log.info(
+            "generation | prompt_tokens=%d new_tokens=%d | first16=%s",
+            prompt_len, gen_ids.shape[-1], gen_ids[:16].tolist(),
+        )
+        return completion
+
+    def generate_json(self, text: str, max_new_tokens: int = 448) -> dict:
+        completion = self.generate_raw(text, max_new_tokens=max_new_tokens)
+        print(f"\n--- LLM OUTPUT ---\n{completion}\n------------------")
+        return self._extract_json(completion)
+
+    @staticmethod
+    def _extract_json(text: str) -> dict:
+        """Достаём JSON: markdown-fence → первый объект → весь текст."""
+        text = (text or "").strip()
+        if not text:
+            return {"_error": "empty_output"}
+
+        m = _JSON_FENCE.search(text)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        m = _JSON_OBJ.search(text)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
 
         try:
-            out = self.model.generate(
-                **enc,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                repetition_penalty=1.0,
-                pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {"_error": "invalid_json", "raw": text}
 
-            gen = out[0][enc["input_ids"].shape[-1]:]
-            completion = self.tokenizer.decode(gen, skip_special_tokens=True)
-
-            completion = "{" + completion
-
-            print(f"\n--- LLM OUTPUT ---\n{completion}\n------------------")
-            return self._extract_json(completion)
-
-        except Exception as e:
-            log.error(f"Критическая ошибка генерации: {e}")
-            return {"error": "generation_failed"}
-
-    def _extract_json(self, text: str) -> dict:
-        """Метод для очистки ответа модели от мусора и парсинга JSON."""
-        import json
-        import re
-
-        try:
-            # 1. Ищем JSON блоки (модель часто пишет ```json ... ```)
-            match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
-            if match:
-                return json.loads(match.group(1))
-
-            # 2. Если блоков нет, ищем просто что-то похожее на структуру { }
-            match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
-            if match:
-                return json.loads(match.group(1))
-
-            # 3. Крайний случай — пробуем парсить строку целиком
-            return json.loads(text.strip())
-        except (json.JSONDecodeError, AttributeError):
-            # Если всё упало, возвращаем хотя бы сырой текст, чтобы не валить сервер
-            return {"error": "invalid_json", "raw_text": text}
-
-    def to_task(self, text: str) -> "PlannerTask":  # Или как там у тебя импортируется PlannerTask
+    def to_task(self, text: str) -> PlannerTask:
         data = self.generate_json(text)
 
-        # Если наша функция-парсер вернула ошибку, возвращаем пустую/дефолтную задачу
-        if "error" in data:
-            print(f"ОШИБКА LLM: Не удалось распарсить JSON. Сырой текст: '{data.get('raw_text')}'")
-            # Возвращаем заглушку, чтобы сервер не падал с 500 ошибкой
-            return PlannerTask(title="Не удалось распознать план",
-                               is_error=True)  # Добавь поле is_error в Pydantic, если его нет
+        if "_error" in data:
+            log.warning("LLM fallback: %s (raw=%r)", data["_error"], data.get("raw", "")[:120])
+            # PlannerTask требует title — кладём короткую заглушку из входного текста.
+            fallback_title = (text or "Не удалось распознать").strip()[:80]
+            return PlannerTask(
+                title=fallback_title,
+                description=None,
+                deadline=None,
+                priority="medium",
+            )
 
         try:
             return PlannerTask(**data)
-        except Exception as e:
-            # На случай если JSON валидный, но не хватает полей для Pydantic
-            print(f"ОШИБКА Pydantic: {e}. Данные: {data}")
-            return PlannerTask(title="Ошибка валидации плана")
+        except Exception as e:  # pydantic ValidationError, KeyError, ...
+            log.warning("Pydantic не принял ответ модели: %s | data=%s", e, data)
+            # Спасаем то, что можем: чекпоинты пытаемся сохранить, если они валидны.
+            raw_priority = data.get("priority")
+            raw_checkpoints = data.get("checkpoints") or []
+            safe_checkpoints = []
+            if isinstance(raw_checkpoints, list):
+                for c in raw_checkpoints:
+                    if isinstance(c, dict) and c.get("step"):
+                        safe_checkpoints.append(
+                            {"step": str(c["step"]), "deadline": c.get("deadline")}
+                        )
+            return PlannerTask(
+                title=str(data.get("title") or text or "Задача")[:80],
+                description=data.get("description"),
+                deadline=data.get("deadline"),
+                priority=raw_priority if raw_priority in {"low", "medium", "high", "urgent"} else "medium",
+                checkpoints=safe_checkpoints,
+                tags=data.get("tags") or [],
+            )

@@ -21,9 +21,17 @@ class EnrichedUtterance(BaseModel):
         return self.text
 
 
+class Checkpoint(BaseModel):
+    """Одна контрольная точка плана."""
+    step: str                          # что конкретно сделать
+    deadline: Optional[str] = None     # под-срок шага (нормализованная фраза) или null
+
+
 class PlannerTask(BaseModel):
-    """Финальный JSON, который бот отдаёт пользователю"""
+    """Финальный JSON, который бот отдаёт пользователю."""
     title: str
     description: Optional[str] = None
     deadline: Optional[str] = None
-    priority: str = Field(default="medium", pattern="^(low|medium|high)$")
+    priority: str = Field(default="medium", pattern="^(low|medium|high|urgent)$")
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)

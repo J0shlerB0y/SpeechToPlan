@@ -5,7 +5,7 @@
 faster-whisper>=1.0.3
 transformers==4.46.0
 accelerate>=1.0.0
-peft==0.13.2
+peft>=0.15.0
 sentencepiece>=0.2.0
 soundfile>=0.12.1
 numpy>=1.26

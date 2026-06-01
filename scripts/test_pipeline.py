@@ -1,9 +1,20 @@
 """Smoke-test пайплайна без Telegram-бота.
 
-Запуск:
-    python -m scripts.test_pipeline path/to/audio.ogg
-    python -m scripts.test_pipeline path/to/audio.ogg --device cpu --quant none
-    python -m scripts.test_pipeline --text "завтра сдать отчёт"
+Примеры:
+    # чистая база (без LoRA адаптеров)
+    python -m scripts.test_pipeline ".\\тестовое.ogg" --device cpu --quant none
+
+    # с LoRA-адаптером для LLM
+    python -m scripts.test_pipeline ".\\тестовое.ogg" --device cpu --quant none \
+        --llm-adapter .\\checkpoints\\gemma-grid\\best_adapter
+
+    # с LoRA-адаптером для Whisper (требует --asr-backend transformers)
+    python -m scripts.test_pipeline ".\\тестовое.ogg" --device cuda \
+        --asr-backend transformers \
+        --asr-adapter .\\checkpoints\\whisper-lora-ru\\search\\lr1e-03_r8_a16\\adapter
+
+    # текст напрямую, без ASR
+    python -m scripts.test_pipeline --text "завтра в 9 утра встреча"
 """
 from __future__ import annotations
 
@@ -30,12 +41,15 @@ def main() -> int:
     p = argparse.ArgumentParser(description="SpeechToPlan smoke test")
     p.add_argument("audio", nargs="?", help="путь до .ogg / .wav / .mp3")
     p.add_argument("--text", help="подать текст напрямую, без ASR")
-    p.add_argument("--device",      default=os.getenv("DEVICE", "cuda"), choices=["cuda", "cpu"])
-    p.add_argument("--quant",       default=os.getenv("LLM_QUANT", "int4"), choices=["int4", "int8", "none"])
-    p.add_argument("--asr-size",    default=os.getenv("ASR_MODEL_SIZE", "tiny"))
-    p.add_argument("--asr-compute", default=os.getenv("ASR_COMPUTE_TYPE", "int8"))
-    p.add_argument("--llm-model",   default=os.getenv("LLM_MODEL_PATH", "google/functiongemma-270m-it"))
-    p.add_argument("--skip-llm",    action="store_true", help="только ASR, без LLM")
+    p.add_argument("--device",       default=os.getenv("DEVICE", "cuda"), choices=["cuda", "cpu"])
+    p.add_argument("--quant",        default=os.getenv("LLM_QUANT", "int4"), choices=["int4", "int8", "none"])
+    p.add_argument("--asr-backend",  default=os.getenv("ASR_BACKEND", "faster"), choices=["faster", "transformers"])
+    p.add_argument("--asr-size",     default=os.getenv("ASR_MODEL_SIZE", "tiny"))
+    p.add_argument("--asr-compute",  default=os.getenv("ASR_COMPUTE_TYPE", "int8"))
+    p.add_argument("--asr-adapter",  default=os.getenv("ASR_ADAPTER_PATH"))
+    p.add_argument("--llm-model",    default=os.getenv("LLM_MODEL_PATH", "Qwen/Qwen2.5-0.5B-Instruct"))
+    p.add_argument("--llm-adapter",  default=os.getenv("LLM_ADAPTER_PATH"))
+    p.add_argument("--skip-llm",     action="store_true", help="только ASR, без LLM")
     args = p.parse_args()
 
     if not args.audio and not args.text:
@@ -50,11 +64,22 @@ def main() -> int:
             log.error("Файл не найден: %s", audio_path)
             return 2
 
-        from asr_emotion.asr import WhisperASR
-        log.info("Загружаем Whisper (%s / %s) на %s", args.asr_size, args.asr_compute, args.device)
-        t0 = time.perf_counter()
-        asr = WhisperASR.load(size=args.asr_size, device=args.device, compute_type=args.asr_compute)
-        log.info("ASR загружен за %.1fс", time.perf_counter() - t0)
+        if args.asr_backend == "transformers" or args.asr_adapter:
+            from asr_emotion.asr import WhisperASRTransformers
+            log.info("ASR backend=transformers, size=%s, adapter=%s", args.asr_size, args.asr_adapter)
+            t0 = time.perf_counter()
+            asr = WhisperASRTransformers.load(
+                size=args.asr_size, device=args.device,
+                compute_type=args.asr_compute,
+                adapter_path=args.asr_adapter,
+            )
+            log.info("ASR загружен за %.1fс | has_adapter=%s", time.perf_counter() - t0, asr.has_adapter)
+        else:
+            from asr_emotion.asr import WhisperASR
+            log.info("ASR backend=faster-whisper, size=%s/%s", args.asr_size, args.asr_compute)
+            t0 = time.perf_counter()
+            asr = WhisperASR.load(size=args.asr_size, device=args.device, compute_type=args.asr_compute)
+            log.info("ASR загружен за %.1fс", time.perf_counter() - t0)
 
         t1 = time.perf_counter()
         asr_res = asr.transcribe(str(audio_path))
@@ -70,10 +95,15 @@ def main() -> int:
 
     # --- LLM ---
     from llm.inference import GemmaPlannerLLM
-    log.info("Загружаем LLM %s (quant=%s)", args.llm_model, args.quant)
+    log.info("Загружаем LLM %s (quant=%s, adapter=%s)", args.llm_model, args.quant, args.llm_adapter)
     t2 = time.perf_counter()
-    llm = GemmaPlannerLLM.load(model_path=args.llm_model, quant=args.quant, device=args.device)
-    log.info("LLM загружен за %.1fс", time.perf_counter() - t2)
+    llm = GemmaPlannerLLM.load(
+        model_path=args.llm_model,
+        quant=args.quant,
+        device=args.device,
+        adapter_path=args.llm_adapter,
+    )
+    log.info("LLM загружен за %.1fс | has_adapter=%s", time.perf_counter() - t2, llm.has_adapter)
 
     t3 = time.perf_counter()
     task = llm.to_task(text)

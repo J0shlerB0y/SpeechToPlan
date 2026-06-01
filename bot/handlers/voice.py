@@ -42,4 +42,4 @@ async def handle_voice(
     finally:
         local_path.unlink(missing_ok=True)
 
-    await message.answer(format_task(task), parse_mode="Markdown")
+    await message.answer(format_task(task))  # parse_mode=HTML по умолчанию (см. bot/main.py)

@@ -1,0 +1,17 @@
+[
+  {
+    "learning_rate": 0.0003,
+    "lora_rank": 16,
+    "lora_alpha": 32,
+    "train_loss": 2.428069829940796,
+    "eval_loss": 1.8678016662597656,
+    "eval_perplexity": 6.47404862481509,
+    "json_validity": 1.0,
+    "exact_match": 0.0,
+    "priority_accuracy": 0.6666666666666666,
+    "deadline_accuracy": 0.3333333333333333,
+    "checkpoint_presence": 1.0,
+    "checkpoint_count_match": 1.0,
+    "adapter": "checkpoints\\qwen05-smoke\\lr3e-04_r16_a32\\adapter"
+  }
+]
