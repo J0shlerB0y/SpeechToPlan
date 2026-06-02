@@ -1,4 +1,3 @@
-"""Обработка голосовых и аудио-сообщений."""
 from __future__ import annotations
 
 import logging
@@ -24,7 +23,7 @@ async def handle_voice(
 ) -> None:
     voice = message.voice or message.audio
     if voice.duration and voice.duration > config.max_audio_seconds:
-        await message.answer(f"Аудио длиннее {config.max_audio_seconds} секунд — не обработаю.")
+        await message.answer(f"Аудио длиннее {config.max_audio_seconds} секунд — не обработаю")
         return
 
     await message.chat.do("record_voice")
@@ -38,9 +37,9 @@ async def handle_voice(
         task = await pipeline.process_voice(local_path)
     except Exception:
         logger.exception("Voice pipeline failed")
-        await message.answer("Не смог распознать аудио. Попробуй ещё раз или отправь текстом.")
+        await message.answer("Не смог распознать аудио. Попробуй ещё раз или отправь текстом")
         return
     finally:
         local_path.unlink(missing_ok=True)
 
-    await message.answer(format_task(task), parse_mode="Markdown")
+    await message.answer(format_task(task))  # parse_mode=HTML по умолчанию (см. bot/main.py)

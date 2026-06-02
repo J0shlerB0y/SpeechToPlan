@@ -1,0 +1,14 @@
+[
+  {
+    "learning_rate": 0.0005,
+    "lora_rank": 8,
+    "lora_alpha": 16,
+    "train_loss": 1.3355799913406372,
+    "eval_loss": 1.0820438861846924,
+    "eval_perplexity": 2.9507042957671743,
+    "json_validity": 1.0,
+    "exact_match": 0.0,
+    "field_accuracy": 0.0625,
+    "adapter": "checkpoints\\smollm2-grid\\lr5e-04_r8_a16\\adapter"
+  }
+]

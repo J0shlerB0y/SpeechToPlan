@@ -1,4 +1,4 @@
-"""Точка входа Telegram-бота. Запуск: `python -m bot.main`."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,9 +21,9 @@ logger = logging.getLogger("bot")
 
 async def main() -> None:
     cfg = load_config()
-    logger.info("Подключаемся к ML-сервису: %s", cfg.ml_service_url)
+    logger.info("Подключаемся к ML: %s", cfg.ml_service_url)
     pipeline = await AssistantPipeline.build(cfg)
-    logger.info("Бот готов. Стартуем polling.")
+    logger.info("Бот готов\nСтарт\n\n")
 
     bot = Bot(cfg.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()

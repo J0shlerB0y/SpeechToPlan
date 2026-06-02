@@ -1,0 +1,17 @@
+[
+  {
+    "learning_rate": 0.0003,
+    "lora_rank": 16,
+    "lora_alpha": 32,
+    "train_loss": 0.15142080096734895,
+    "eval_loss": 0.04321414977312088,
+    "eval_perplexity": 1.0441614778532173,
+    "json_validity": 1.0,
+    "exact_match": 0.05,
+    "priority_accuracy": 0.75,
+    "deadline_accuracy": 0.6,
+    "checkpoint_presence": 1.0,
+    "checkpoint_count_match": 1.0,
+    "adapter": "checkpoints\\qwen05-grid2\\lr3e-04_r16_a32\\adapter"
+  }
+]

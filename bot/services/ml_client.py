@@ -1,7 +1,3 @@
-"""HTTP-клиент к локальному ML-сервису (FastAPI на хосте).
-
-Бот общается с ML только через эти две функции — никаких torch/whisper в боте.
-"""
 from __future__ import annotations
 
 import logging

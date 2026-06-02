@@ -1,4 +1,3 @@
-"""Команды /start, /help, /ping."""
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -6,10 +5,9 @@ from aiogram.types import Message
 common_router = Router(name="common")
 
 WELCOME = (
-    "Привет! Я локальный ассистент-планировщик.\n\n"
-    "• Пришли *текст* — превращу в задачу.\n"
-    "• Пришли *голосовое* — расшифрую, оценю эмоцию и тоже сделаю задачу.\n\n"
-    "Все модели работают локально, ничего во внешний мир не уходит."
+    "это ассистент-планировщик\n\n"
+    "* пришли *текст* — превращу в задачу\n"
+    "* пришли *голосовое* — расшифрую и сделаю задачу\n\n"
 )
 
 
